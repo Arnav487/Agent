@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Business Workflow Agent</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--fg:#1a1d23;--mut:#667085;--bd:#dfe3e8;--ok:#16794a;--okbg:#e3f6ec;--warn:#a15c00;--warnbg:#fff1d6;--bad:#b42318;--badbg:#fde4e1;--acc:#2f5bea;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14161a;--card:#1d2026;--fg:#eceef2;--mut:#9aa3b2;--bd:#2d323b;--ok:#6fdca4;--okbg:#12362a;--warn:#f5c06a;--warnbg:#3b2d10;--bad:#ff9b92;--badbg:#401a17;--acc:#7a9bff;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#14161a;--card:#1d2026;--fg:#eceef2;--mut:#9aa3b2;--bd:#2d323b;--ok:#6fdca4;--okbg:#12362a;--warn:#f5c06a;--warnbg:#3b2d10;--bad:#ff9b92;--badbg:#401a17;--acc:#7a9bff;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:720px;margin:0 auto;padding:16px}
+h1{font-size:1.3rem;margin:4px 0}h2{font-size:1rem;margin:0 0 8px}
+.sub{color:var(--mut);margin:0 0 14px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:12px}
+label{display:block;font-size:.8rem;color:var(--mut);margin:8px 0 3px}
+input,textarea{width:100%;padding:9px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--fg);font:inherit}
+textarea{min-height:70px;resize:vertical}
+button{font:inherit;border:0;border-radius:8px;padding:10px 14px;cursor:pointer}
+.run{background:var(--acc);color:#fff;font-weight:600;width:100%;margin-top:12px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:4px}
+.chip{background:var(--bg);color:var(--fg);border:1px solid var(--bd);padding:6px 10px;font-size:.8rem}
+.badge{display:inline-block;padding:2px 10px;border-radius:99px;font-weight:600;font-size:.8rem}
+.resolved{background:var(--okbg);color:var(--ok)}.routed{background:var(--okbg);color:var(--ok)}
+.needs_info{background:var(--warnbg);color:var(--warn)}.escalated{background:var(--badbg);color:var(--bad)}
+.row{display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px dashed var(--bd)}
+.row:last-child{border:0}.k{color:var(--mut)}
+.scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:.85rem}
+td,th{text-align:left;padding:5px 8px;border-bottom:1px solid var(--bd);white-space:nowrap}
+.log{font:12px/1.5 ui-monospace,Menlo,Consolas,monospace;color:var(--mut)}
+.log b{color:var(--fg)}
+</style>
+</head>
+<body>
+<main>
+<h1>Business Workflow Agent</h1>
+<p class="sub">Triages service requests: classify, check the order, apply business rules, update the ticket, verify it saved, and escalate anything risky, missing or conflicting to a human.</p>
+
+<div class="card">
+<h2>Try a sample</h2>
+<div class="chips" id="chips"></div>
+<label for="cust">Customer name</label><input id="cust" placeholder="e.g. Priya">
+<label for="oid">Order ID (leave blank if none)</label><input id="oid" placeholder="e.g. A100">
+<label for="txt">Request</label><textarea id="txt" placeholder="Type a customer request..."></textarea>
+<button class="run" id="run">Run agent</button>
+</div>
+
+<div class="card" id="out" hidden>
+<h2>Result</h2><div id="res"></div>
+</div>
+
+<div class="card"><h2>Audit log</h2><div class="log" id="log">No requests yet.</div></div>
+
+<div class="card scroll"><h2>Mock orders (system of record)</h2>
+<table id="orders"></table>
+<p class="sub" style="margin:8px 0 0">Rules: refunds up to $100 within 30 days are auto-approved; larger or older ones go to a manager. Address changes only before shipping. Legal or fraud language always goes to a manager. Today's date is fixed at 14 Oct 2026.</p></div>
+</main>
+<script>
+const TODAY=new Date("2026-10-14");
+const RULES={limit:100,window:30,risk:["lawyer","legal","sue","chargeback","fraud","press"]};
+const ORDERS={A100:{customer:"Priya",total:45,date:"2026-10-05",status:"delivered"},A101:{customer:"Marcus",total:240,date:"2026-10-08",status:"delivered"},A102:{customer:"Lena",total:80,date:"2026-10-12",status:"processing"},A103:{customer:"Omar",total:60,date:"2026-08-01",status:"delivered"}};
+const tickets={},audit=[];let n=0;
+const SAMPLES=[
+["Small refund","Priya","A100","I'd like a refund for my order, it arrived damaged."],
+["Missing order ID","Lena","","Please change my address, I moved last week."],
+["Refund over limit","Marcus","A101","I want my money back for this order."],
+["Conflicting","Lena","A102","Cancel my order but also ship to my new address."],
+["Legal threat","Omar","A103","Refund me now or I will call my lawyer."]];
+
+function classify(t){t=t.toLowerCase();const c=[];
+if(/refund|money back|charged twice/.test(t))c.push("refund");
+if(/change (my )?address|wrong address|ship to/.test(t))c.push("address_change");
+if(/cancel/.test(t))c.push("cancel");
+if(/not working|error|can't log in|cannot log in|outage/.test(t))c.push("technical");
+return c}
+
+function decide(r){
+const hit=RULES.risk.filter(k=>r.text.toLowerCase().includes(k));
+if(hit.length)return["escalated","manager","Risk keyword(s): "+hit.join(", ")];
+const cats=classify(r.text);
+if(!cats.length)return["escalated","human_triage","Could not classify request"];
+const s=[...cats].sort().join();
+if(cats.length>1&&s!=="cancel,refund")return["escalated","human_triage","Conflicting intents: "+cats.join(", ")];
+const cat=cats[0];
+if(cat==="technical")return["routed","support_team","Technical issue sent to support queue"];
+if(!r.order)return["needs_info","human_triage","Missing order ID; request more info from customer"];
+const o=ORDERS[r.order];
+if(!o)return["escalated","human_triage","Order "+r.order+" not found"];
+if(o.customer.toLowerCase()!==r.customer.toLowerCase())return["escalated","manager","Order "+r.order+" does not belong to "+r.customer];
+if(cat==="address_change")return o.status==="processing"?["resolved","agent","Address change approved (order not yet shipped)"]:["escalated","human_triage","Order already "+o.status+"; cannot change address"];
+const age=Math.round((TODAY-new Date(o.date))/864e5);
+if(age>RULES.window)return["escalated","manager","Order is "+age+" days old (limit "+RULES.window+")"];
+if(o.total>RULES.limit)return["escalated","manager","Amount $"+o.total.toFixed(2)+" exceeds auto limit $"+RULES.limit];
+return["resolved","agent","Refund of $"+o.total.toFixed(2)+" approved (within limit and window)"]}
+
+function handle(r){
+const id="T"+(++n);
+audit.push([id,"received",r.text]);
+const [status,assignee,reason]=decide(r);
+audit.push([id,"decision",status+" -> "+assignee+": "+reason]);
+tickets[id]={status,assignee,note:reason};
+const ok=JSON.stringify(tickets[id])===JSON.stringify({status,assignee,note:reason});
+audit.push([id,"verify",ok?"OK (ticket re-read and matches)":"MISMATCH"]);
+if(!ok)tickets[id]={status:"escalated",assignee:"human_triage",note:"Verification failed; manual check"};
+return{id,status,assignee,reason,ok}}
+
+const $=i=>document.getElementById(i);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+SAMPLES.forEach(s=>{const b=document.createElement("button");b.className="chip";b.textContent=s[0];
+b.onclick=()=>{$("cust").value=s[1];$("oid").value=s[2];$("txt").value=s[3]};$("chips").appendChild(b)});
+$("orders").innerHTML="<tr><th>ID</th><th>Customer</th><th>Total</th><th>Date</th><th>Status</th></tr>"+Object.entries(ORDERS).map(([k,o])=>`<tr><td>${k}</td><td>${o.customer}</td><td>$${o.total.toFixed(2)}</td><td>${o.date}</td><td>${o.status}</td></tr>`).join("");
+$("run").onclick=()=>{
+const text=$("txt").value.trim(),customer=$("cust").value.trim();
+if(!text||!customer){alert("Please enter a customer name and a request.");return}
+const r=handle({customer,order:$("oid").value.trim().toUpperCase(),text});
+$("out").hidden=false;
+$("res").innerHTML=`<div class="row"><span class="k">Ticket</span><b>${r.id}</b></div>
+<div class="row"><span class="k">Status</span><span class="badge ${r.status}">${r.status.replace("_"," ")}</span></div>
+<div class="row"><span class="k">Assigned to</span><b>${r.assignee}</b></div>
+<div class="row"><span class="k">Reason</span><span style="text-align:right">${esc(r.reason)}</span></div>
+<div class="row"><span class="k">Verified</span><b>${r.ok?"Yes":"No"}</b></div>`;
+$("log").innerHTML=audit.slice().reverse().map(a=>`<div><b>${a[0]}</b> ${a[1]}: ${esc(a[2])}</div>`).join("")}
+</script>
+</body>
+</html>
